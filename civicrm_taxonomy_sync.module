@@ -1,0 +1,378 @@
+<?php
+
+/*
+ +--------------------------------------------------------------------+
+ | CiviCRM version 3.2                                                |
+ +--------------------------------------------------------------------+
+ | Copyright Tech To The People (c) 2010                              |
+ +--------------------------------------------------------------------+
+ |                                                                    |
+ | CiviCRM is free software; you can copy, modify, and distribute it  |
+ | under the terms of the GNU Affero General Public License           |
+ | Version 3, 19 November 2007 and the CiviCRM Licensing Exception.   |
+ |                                                                    |
+ | CiviCRM is distributed in the hope that it will be useful, but     |
+ | WITHOUT ANY WARRANTY; without even the implied warranty of         |
+ | MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.               |
+ | See the GNU Affero General Public License for more details.        |
+ |                                                                    |
+ | You should have received a copy of the GNU Affero General Public   |
+ | License and the CiviCRM Licensing Exception along                  |
+ | with this program; if not, contact CiviCRM LLC                     |
+ | at info[AT]civicrm[DOT]org. If you have questions about the        |
+ | GNU Affero General Public License or the licensing of CiviCRM,     |
+ | see the CiviCRM license FAQ at http://civicrm.org/licensing        |
+ +--------------------------------------------------------------------+
+*/
+
+/**
+ *
+ * $Id$
+ *
+ */
+
+/**
+ * Implementation of hook_taxonomy
+ *
+ */
+
+function civicrm_taxonomy_sync_taxonomy($op, $type, $term) {
+
+  if( $type != 'term') {
+    return;
+  }
+  if ( ! civicrm_initialize( ) ) {
+      return;
+  }
+  require_once 'civicrm.config.php';
+  require_once 'CRM/Core/Config.php';
+  require_once 'api/v2/Tag.php';
+
+  $tid = $term['tid'];
+   switch ($op) {
+  	case 'insert':
+  	case 'update':
+      $vocabulary_row = civicrm_taxonomy_sync_get_vocabulary();
+      // Validating that it is a forum term
+      if ($vocabulary_row->vid == $term['vid']) {
+        //Create the new civitag if it does not exist
+        //Finding the parent term
+        	$parentid = $term['parent'][0];
+        	$term_row = civicrm_taxonomy_sync_relation($parentid);
+        	if (is_object($term_row)) {
+            $params = array("name"=>$term['name'], "description"=> $term['description'],
+                "parent_id" => $term_row->civicrm_tagid);
+            if ($op == 'update') {
+              $tag = civicrm_tag_get($params);
+              if (!$tag['is_error']) {
+            	  $params['tag']= $tag['id'];
+              }
+            }
+            $result = civicrm_tag_create ($params);
+            if (civicrm_error($result)) {
+              drupal_set_message("ERROR creating in civicrm " . $term['name'] . ": " . $result['error_message' ], "error");
+            }else {
+              // Create the relation row between drupal and civicrm tag
+              civicrm_taxonomy_sync_create_relation($tid, $result['tag_id']);
+              drupal_set_message("Civicrm tag " . $term['name'] ." was created succesfully.", "status");
+            }
+        	}
+        	else {
+        	  drupal_set_message("Parent tag relation couldn't be found. Parent tag id:" . $parentid , "error");
+        	}
+      }
+  	break;
+  	case 'delete':
+       $term_row = civicrm_taxonomy_sync_relation($tid);
+      //Delete the civitag if it does exist
+      if (is_object($term_row)) {
+        $civitagid = $term_row->civicrm_tagid;
+        $params = array(
+                        'tag_id' => $civitagid
+                        );
+        $result = civicrm_tag_delete( $params );
+        if (civicrm_error($result)) {
+          drupal_set_message("Civicrm tag couldn't be removed.", "error");
+        }else {
+          //Removing the relation in relation table
+          civicrm_taxonomy_sync_remove_relation($tid);
+          drupal_set_message("Civicrm tag was removed succesfully.", "status");
+        }
+     }
+  	break;
+
+  	default:
+  	break;
+  }
+
+}
+
+/*
+ *
+ * Civicrm users tagging on comment posting
+ *
+ */
+function civicrm_taxonomy_sync_comment($node_array, $op) {
+  if ( ! civicrm_initialize( ) ) {
+      return;
+  }
+  require_once 'civicrm.config.php';
+  require_once 'CRM/Core/Config.php';
+  require_once 'api/v2/EntityTag.php';
+  if ($op == 'insert' || $op == 'update') {
+    $nid = $node_array['nid'];
+    $node = node_load( $nid );
+    $node_type = $node->type;
+    if ($node_type == 'forum') {
+      $query = "SELECT * FROM {term_node} WHERE nid = %d";
+      $term_node = db_fetch_object( db_query($query,$node->nid));
+      if(is_object($term_node)) {
+        $term_row = civicrm_taxonomy_sync_relation($term_node->tid);
+        if (is_object($term_row)) {
+        	global $user;
+          $user_id = $user->uid;
+          $civicrm_tag_id = $term_row->civicrm_tagid;
+          $entityParams = array('tag_id'    =>$civicrm_tag_id,
+                                'contact_id'=>$user_id
+                                );
+          // now assign the created contact to the tag searched.
+          $entityTag = civicrm_entity_tag_add( $entityParams);
+        }
+      }
+    }
+  }
+}
+/**
+ * Creates the relation between civi tag and  drupal term
+ *
+ *
+ */
+
+function civicrm_taxonomy_sync_create_relation($tid, $civitag_id) {
+  $query = "SELECT * FROM {civicrm_taxonomy_sync} WHERE tid = %d";
+  $term_row = db_fetch_object( db_query($query,$tid));
+  if( !is_object($term_row)) {
+    $query = "INSERT INTO {civicrm_taxonomy_sync} (tid, civicrm_tagid) VALUES (%d, %d)";
+    $term_row = db_query($query,$tid,$civitag_id);
+  }
+}
+
+/**
+ * Removes the relation between civi tag and  drupal term
+ *
+ *
+ */
+
+function civicrm_taxonomy_sync_remove_relation($tid) {
+  $query = "SELECT * FROM {civicrm_taxonomy_sync} WHERE tid = %d";
+  $term_row = db_fetch_object( db_query($query,$tid));
+  if( is_object($term_row)) {
+    $query = "DELETE FROM {civicrm_taxonomy_sync} WHERE tid = %d";
+    $term_row = db_query($query,$tid);
+  }
+}
+
+
+/**
+ * Returns the relation between civitags and drupal forum vocabulary
+ *
+ *
+ */
+
+function civicrm_taxonomy_sync_relation($tid) {
+  $query = "SELECT * FROM {civicrm_taxonomy_sync} WHERE tid = %d";
+  $term_row = db_fetch_object( db_query($query,$tid));
+  return $term_row;
+}
+
+/**
+ * Implementation of hook_nodeapi
+ *
+ *
+ */
+function civicrm_taxonomy_sync_nodeapi( &$node, $op, $a3 = null, $a4 = null ) {
+    // check if the node if of type og
+  $content_types_array = array();
+
+  if ( $node->type != 'forum' ) {
+      return;
+  }
+
+  if ( ! civicrm_initialize( ) ) {
+      return;
+  }
+
+
+  switch ( $op ) {
+  case 'insert':
+  case 'update':
+    require_once 'civicrm.config.php';
+    require_once 'CRM/Core/Config.php';
+    require_once 'api/v2/EntityTag.php';
+    //Find the term related with this node
+    $query = "SELECT * FROM {term_node} WHERE nid = %d";
+    $term_node = db_fetch_object( db_query($query,$node->nid));
+    if(is_object($term_node)) {
+      //Find the tag relation
+      $term_row = civicrm_taxonomy_sync_relation($term_node->tid);
+      if (is_object($term_row)) {
+        global $user;
+        $user_id = $user->uid;
+        $civicrm_tag_id = $term_row->civicrm_tagid;
+        $entityParams = array('tag_id'    =>$civicrm_tag_id,
+                              'contact_id'=>$user_id
+                              );
+        // now assign the created contact to the tag searched.
+        $entityTag = civicrm_entity_tag_add( $entityParams);
+
+      }
+      else {
+        drupal_set_message(t('The forum vocabulary term does not exist as a term through the admin interface, please add it.'),'error');
+      }
+    }
+    case 'delete':
+
+    break;
+    default:
+    break;
+  }
+}
+
+
+
+/**
+ * Implementation of hook_menu
+ *
+ *
+ *
+*/
+function civicrm_taxonomy_sync_menu() {
+  $items['admin/settings/civicrm-forum-sync'] = array(
+    'title' => t('Civicrm Forums Sync'),
+    'description' => t('Interface to import forums tag to civicrm tags.'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('civicrm_taxonomy_sync_import_forums_form'),
+    'access arguments' => array('administer civicrm_taxonomy_sync'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  return $items;
+
+}
+
+
+/**
+ * Implementation of hook_perm().
+ *
+ * @return Array
+ *
+ */
+function civicrm_taxonomy_sync_perm() {
+  return array('administer civicrm_taxonomy_sync');
+}
+
+/*
+ *
+ * Submit action to create the civitags from the forum terms
+ *
+ */
+function civicrm_taxonomy_sync_import_forums_form_submit($form, $form_state) {
+   if ( ! civicrm_initialize( ) ) {
+      return;
+  }
+  require_once 'civicrm.config.php';
+  require_once 'CRM/Core/Config.php';
+  require_once 'api/v2/Tag.php';
+
+  $action = $form_state['clicked_button']['#parents'][0];
+  if ($action == 'remove') {
+    $query = "TRUNCATE {civicrm_taxonomy_sync}";
+    db_query($query);
+  }
+  else {
+    $tags_array = civicrm_taxonomy_sync_get_forum_hierarchy_array();
+    foreach ($tags_array as $term_object) {
+      $tid = $term_object->tid;
+      $term = taxonomy_get_term($tid);
+      $term_row = civicrm_taxonomy_sync_relation($term_object->parent);
+      $parentid = NULL;
+      if (!is_object($term_row)) {
+          $parentid = NULL;
+      }
+      else {
+        $parentid = $term_row->civicrm_tagid;
+      }
+      $params = array("name"=>trim($term->name), "description"=> $term->description,
+          "parent_id" => $parentid);
+      //Checking if tag already exist
+      $params_get = array("name"=>trim($term->name));
+      $tag = civicrm_tag_get($params_get);
+      if ($tag['is_error']) {
+        $result = civicrm_tag_create ($params);
+        if (civicrm_error($result)) {
+          drupal_set_message("ERROR creating" . $term->name . ": " . $result['error_message' ], "error");
+        }else {
+          // Create the relation row between drupal and civicrm tag
+          civicrm_taxonomy_sync_create_relation($tid, $result['tag_id']);
+          drupal_set_message("Civicrm tag " . $term->name ." was created succesfully.", "status");
+        }
+      }else {
+          // Create the relation row between drupal and civicrm tag
+          civicrm_taxonomy_sync_create_relation($tid, $tag['id']);
+          drupal_set_message("Civicrm tag " . $term->name ." was created succesfully.", "status");
+      }
+    }
+  }
+}
+
+/*
+ *
+ * Form for Init civitag and forums sync
+ *
+ */
+
+function civicrm_taxonomy_sync_import_forums_form() {
+  $form['submit'] = array('#type' => 'submit',
+    '#value' => t('Import'),
+  );
+  $form['remove'] = array('#type' => 'submit',
+    '#value' => t('Remove old data'),
+    '#description' => t("( Remove old data first when reimporting tags)")
+  );
+
+  return $form;
+}
+
+
+/*
+ *
+ * Finds the forum vocabulary id in the site
+ *
+ */
+
+function civicrm_taxonomy_sync_get_vocabulary() {
+
+  $query = "SELECT * FROM {vocabulary} WHERE name = 'Forums'";
+  $vocabulary_row = db_fetch_object( db_query($query));
+  return $vocabulary_row;
+}
+
+
+/*
+ *
+ * Return an array with the drupal forum hierarchy
+ *
+ */
+function civicrm_taxonomy_sync_get_forum_hierarchy_array() {
+  //Finding the forums vocabulary id
+  $vocabulary_row = civicrm_taxonomy_sync_get_vocabulary();
+  $forum_vid = $vocabulary_row->vid;
+  // Extractin the hierarchy just for forum items
+  $query = "SELECT * FROM {term_hierarchy} WHERE {term_hierarchy}.tid IN ( SELECT tid FROM {term_data} WHERE {term_data}.vid = %d ) ORDER BY parent ASC";
+  $forum_hierarchy =  db_query($query,$forum_vid);
+  $forum_hierarchy_array = array();
+  while ( $hierarchy = db_fetch_object($forum_hierarchy)) {
+    $forum_hierarchy_array[] = $hierarchy;
+  }
+	return $forum_hierarchy_array;
+}
+

@@ -1,0 +1,8 @@
+name = CiviCRM Advanced Forum Sync
+description = Gives a sync tool between taxonomy in drupal and civicrm tags (read the readme)
+version = 1.0
+dependencies[] = civicrm
+dependencies[] = forum
+package = CiviCRM
+core = 6.x
+php = 5.2

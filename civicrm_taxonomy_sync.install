@@ -1,0 +1,44 @@
+<?php
+
+/**
+ * @file
+ * Civicrm Forum Sync install schema for supporting civi users forum taging
+ *
+ */
+
+/**
+ * Implementation of hook_install().
+ * Adding a new field to quiz_node_relationship table to handle adaptative quiz.
+ */
+function civicrm_taxonomy_sync_install() {
+  $ret = array();
+  drupal_install_schema('civicrm_taxonomy_sync');
+   db_add_index($ret, 'civicrm_taxonomy_sync', 'tid', array('tid'));
+  return $ret;
+}
+
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function civicrm_taxonomy_sync_uninstall() {
+  
+  drupal_uninstall_schema('civicrm_taxonomy_sync');
+}
+
+
+/**
+ * Implementation of hook_schema.
+ */
+function civicrm_taxonomy_sync_schema() {
+  $schema['civicrm_taxonomy_sync'] = array(
+    'fields' => array(
+      'tid'        => array('type' => 'int', 'not null' => TRUE, 'default' => 0),
+      'civicrm_tagid'        => array('type' => 'int',  'not null' => TRUE, 'default' => 0),
+      ),
+      'primary key' => array('tid'),
+      );
+  return $schema;    
+}
+?>
+
