@@ -25,16 +25,12 @@
  +--------------------------------------------------------------------+
 */
 
-/**
- *
- * $Id$
- *
- */
 
 /**
  * Implementation of hook_taxonomy
  *
  */
+
 
 function civicrm_taxonomy_sync_taxonomy($op, $type, $term) {
 
@@ -61,7 +57,7 @@ function civicrm_taxonomy_sync_taxonomy($op, $type, $term) {
         	$term_row = civicrm_taxonomy_sync_relation($parentid);
         	if (is_object($term_row)) {
             $params = array("name"=>$term['name'], "description"=> $term['description'],
-                "parent_id" => $term_row->civicrm_tagid);
+                "parent_id" => $term_row->civicrm_tagid, "used_for" => "civicrm_contact");
             if ($op == 'update') {
               $tag = civicrm_tag_get($params);
               if (!$tag['is_error']) {
@@ -119,18 +115,29 @@ function civicrm_taxonomy_sync_comment($node_array, $op) {
   require_once 'civicrm.config.php';
   require_once 'CRM/Core/Config.php';
   require_once 'api/v2/EntityTag.php';
+  require_once 'api/v2/UFGroup.php';
   if ($op == 'insert' || $op == 'update') {
     $nid = $node_array['nid'];
     $node = node_load( $nid );
     $node_type = $node->type;
-    if ($node_type == 'forum') {
+    $civicrm_forum_sync_nodetype = array("forum");
+    if ( in_array($node_type, $civicrm_forum_sync_nodetype)) {
       $query = "SELECT * FROM {term_node} WHERE nid = %d";
       $term_node = db_fetch_object( db_query($query,$node->nid));
       if(is_object($term_node)) {
         $term_row = civicrm_taxonomy_sync_relation($term_node->tid);
         if (is_object($term_row)) {
+          if (!$term_row->civicrm_tagid) {
+            drupal_set_message("Tag sync avoided.", "status");
+          	return;
+          }
         	global $user;
           $user_id = $user->uid;
+        	$civi_contact_id = civicrm_uf_match_id_get ($user_id);
+        	if ( !$civi_contact_id ) {
+        	  drupal_set_message("There is no Civicrm contact for the given user.", "status");
+        	  return;
+        	}
           $civicrm_tag_id = $term_row->civicrm_tagid;
           $entityParams = array('tag_id'    =>$civicrm_tag_id,
                                 'contact_id'=>$user_id
@@ -193,9 +200,10 @@ function civicrm_taxonomy_sync_relation($tid) {
 function civicrm_taxonomy_sync_nodeapi( &$node, $op, $a3 = null, $a4 = null ) {
     // check if the node if of type og
   $content_types_array = array();
-
-  if ( $node->type != 'forum' ) {
-      return;
+  $civicrm_forum_sync_nodetype = array("forum");
+  if ( !in_array($node->type, $civicrm_forum_sync_nodetype)) {
+     drupal_set_message("No forum content type", "status");
+    return;
   }
 
   if ( ! civicrm_initialize( ) ) {
@@ -209,6 +217,7 @@ function civicrm_taxonomy_sync_nodeapi( &$node, $op, $a3 = null, $a4 = null ) {
     require_once 'civicrm.config.php';
     require_once 'CRM/Core/Config.php';
     require_once 'api/v2/EntityTag.php';
+    require_once 'api/v2/UFGroup.php';
     //Find the term related with this node
     $query = "SELECT * FROM {term_node} WHERE nid = %d";
     $term_node = db_fetch_object( db_query($query,$node->nid));
@@ -216,8 +225,17 @@ function civicrm_taxonomy_sync_nodeapi( &$node, $op, $a3 = null, $a4 = null ) {
       //Find the tag relation
       $term_row = civicrm_taxonomy_sync_relation($term_node->tid);
       if (is_object($term_row)) {
+        if (!$term_row->civicrm_tagid) {
+            drupal_set_message("Tag sync avoided.", "status");
+          	return;
+        }
         global $user;
         $user_id = $user->uid;
+        $civi_contact_id = civicrm_uf_match_id_get ($user_id);
+        if ( !$civi_contact_id ) {
+        	 drupal_set_message("There is no Civicrm contact for the given user.", "status");
+        	 return;
+        }
         $civicrm_tag_id = $term_row->civicrm_tagid;
         $entityParams = array('tag_id'    =>$civicrm_tag_id,
                               'contact_id'=>$user_id
@@ -302,7 +320,7 @@ function civicrm_taxonomy_sync_import_forums_form_submit($form, $form_state) {
         $parentid = $term_row->civicrm_tagid;
       }
       $params = array("name"=>trim($term->name), "description"=> $term->description,
-          "parent_id" => $parentid);
+          "parent_id" => $parentid, "used_for" => "civicrm_contact");
       //Checking if tag already exist
       $params_get = array("name"=>trim($term->name));
       $tag = civicrm_tag_get($params_get);
